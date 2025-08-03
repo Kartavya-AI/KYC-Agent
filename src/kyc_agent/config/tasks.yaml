@@ -1,0 +1,18 @@
+initiate_kyc_task:
+  description: >
+    Initiate the KYC process for a customer with Aadhaar number {aadhaar_number}
+    and mobile number {mobile_number}. Send OTPs to both and verify them.
+  expected_output: >
+    A confirmation message indicating the success or failure of the OTP verification
+    for both Aadhaar and mobile number. For example:
+    'Mobile OTP verification successful. Aadhaar OTP verification successful.'
+
+video_verification_task:
+  description: >
+    Conduct a video verification for the customer. Initiate a video call,
+    capture a live image of the customer, and compare it with their Aadhaar photo.
+    The customer's details are: Aadhaar Number: {aadhaar_number}, Mobile: {mobile_number}.
+  expected_output: >
+    A JSON object with the verification status and a confidence score.
+    For example:
+    '{ "status": "success", "confidence_score": 0.95, "message": "Face verification successful." }'
