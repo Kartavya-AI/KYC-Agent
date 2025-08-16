@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import threading
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-from src.kyc_agent.tools.custom_tool import send_otp, verify_otp, verify_face
+from tool import send_otp, verify_otp, verify_face
 
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
