@@ -9,13 +9,15 @@ from datetime import datetime
 import json
 
 # Suppress TensorFlow warnings and info messages
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=info, 2=warning, 3=error
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL only
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable oneDNN for consistent results
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Force CPU only
 
 # Suppress TensorFlow warnings before importing
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 warnings.filterwarnings('ignore', category=FutureWarning, module='tensorflow')
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
 import httpx
 
+# Import lightweight functions only
 from tool import send_otp, verify_otp
 
 # Configure structured logging
@@ -56,19 +59,24 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting KYC Agent API - Fast startup mode")
     
-    # Validate required environment variables
-    required_env_vars = [
-        "TWILIO_ACCOUNT_SID",
-        "TWILIO_AUTH_TOKEN", 
-        "TWILIO_VERIFY_SID"
-    ]
-    
-    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-    if missing_vars:
-        logger.error("Missing required environment variables", missing_vars=missing_vars)
-        raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
-    
-    logger.info("KYC Agent API initialized successfully - DeepFace will load on first face verification request")
+    try:
+        # Validate required environment variables
+        required_env_vars = [
+            "TWILIO_ACCOUNT_SID",
+            "TWILIO_AUTH_TOKEN", 
+            "TWILIO_VERIFY_SID"
+        ]
+        
+        missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+        if missing_vars:
+            logger.error("Missing required environment variables", missing_vars=missing_vars)
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
+        logger.info("KYC Agent API initialized successfully - DeepFace will load on first face verification request")
+        
+    except Exception as e:
+        logger.error("Failed to initialize API", error=str(e))
+        raise
     
     yield
     
@@ -165,7 +173,7 @@ async def health_check():
 async def detailed_health_check():
     """Detailed health check with service status"""
     try:
-        # Check if DeepFace module is loaded
+        # Check if DeepFace module is loaded without loading it
         from tool import _deepface_module
         face_verification_loaded = _deepface_module is not None
     except:
@@ -324,9 +332,16 @@ async def verify_face_endpoint(
                 detail="Only JPEG and PNG images are supported"
             )
         
-        # Read image data
+        # Validate file sizes (max 10MB each)
+        max_file_size = 10 * 1024 * 1024  # 10MB
         aadhaar_data = await aadhaar_photo.read()
         live_data = await live_photo.read()
+        
+        if len(aadhaar_data) > max_file_size or len(live_data) > max_file_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File size too large. Maximum size is 10MB per image."
+            )
         
         # Lazy import face verification to avoid startup delays
         try:
@@ -334,13 +349,22 @@ async def verify_face_endpoint(
         except ImportError as e:
             logger.error("Failed to import face verification module", error=str(e))
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Face verification service unavailable"
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Face verification service is temporarily unavailable. Please try again later."
             )
         
-        # Verify faces using custom tool
-        verification_result = verify_face(aadhaar_data, live_data)
-        result_data = json.loads(verification_result)
+        # Verify faces using custom tool with timeout handling
+        try:
+            logger.info("Starting face verification process", request_id=request_id)
+            verification_result = verify_face(aadhaar_data, live_data)
+            result_data = json.loads(verification_result)
+            logger.info("Face verification completed", request_id=request_id, result=result_data.get("status"))
+        except Exception as e:
+            logger.error("Face verification process failed", request_id=request_id, error=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Face verification process failed. Please ensure images are clear and contain faces."
+            )
         
         # Update session
         session["video_verified"] = result_data.get("match", False)
@@ -353,7 +377,7 @@ async def verify_face_endpoint(
                 message="Face verification successful. KYC process completed.",
                 data={
                     "face_match": True,
-                    "confidence_score": 1.0 - result_data.get("distance", 1.0),
+                    "confidence_score": result_data.get("confidence", 0.0),
                     "kyc_completed": True
                 },
                 request_id=request_id
@@ -364,15 +388,15 @@ async def verify_face_endpoint(
                 message="Face verification failed. The faces do not match sufficiently.",
                 data={
                     "face_match": False,
-                    "confidence_score": 1.0 - result_data.get("distance", 1.0),
+                    "confidence_score": result_data.get("confidence", 0.0),
                     "kyc_completed": False
                 },
                 request_id=request_id
             )
         else:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Face verification error: {result_data.get('message', 'Unknown error')}"
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Face verification error: {result_data.get('message', 'Unable to process the provided images')}"
             )
             
     except HTTPException:
@@ -424,7 +448,7 @@ async def complete_kyc_verification(request_id: str):
         
         # Calculate overall confidence score
         verification_result = session.get("verification_result", {})
-        face_confidence = 1.0 - verification_result.get("distance", 1.0) if verification_result.get("distance") is not None else 0.8
+        face_confidence = verification_result.get("confidence", 0.8)
         
         return KYCResponse(
             status="success",

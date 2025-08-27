@@ -25,4 +25,4 @@ USER user
 ENV PORT=8080
 EXPOSE $PORT
 
-CMD exec gunicorn --bind :$PORT --workers 2 --worker-class uvicorn.workers.UvicornWorker --timeout 240 api:app
+CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 300 --worker-connections 1000 --max-requests 1000 --max-requests-jitter 100 --preload api:app
